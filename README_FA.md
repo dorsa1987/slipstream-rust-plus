@@ -22,9 +22,9 @@
 ```mermaid
 %%{init: {'theme': 'dark'}}%%
 xychart-beta
-    title "مقایسه سرعت دانلود (مگابایت بر ثانیه)"
+    title "Download Speed Comparison (MB/s)"
     x-axis ["dnstt", "Slipstream (C)", "Rust (Auth)", "Rust Plus"]
-    y-axis "MB/s" 0..520
+    y-axis "MB/s"
     bar [4.01, 9.12, 24.57, 512]
 ```
 
