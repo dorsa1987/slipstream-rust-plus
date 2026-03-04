@@ -230,6 +230,7 @@ pub(super) struct ClientStream {
     pub(super) recv_state: StreamRecvState,
     pub(super) send_state: StreamSendState,
     pub(super) flow: FlowControlState,
+    pub(super) _reservation: acceptor::AcceptorReservation,
 }
 
 impl HasFlowControlState for ClientStream {

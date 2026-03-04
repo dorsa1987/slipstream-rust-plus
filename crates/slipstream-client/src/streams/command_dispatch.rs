@@ -76,7 +76,7 @@ pub(crate) fn handle_command(
     match command {
         Command::NewStream {
             stream,
-            reservation,
+            mut reservation,
         } => {
             if !reservation.is_fresh() {
                 drop(stream);
@@ -153,6 +153,7 @@ pub(crate) fn handle_command(
                     recv_state: StreamRecvState::Open,
                     send_state: StreamSendState::Open,
                     flow: FlowControlState::default(),
+                    _reservation: reservation,
                 },
             );
             spawn_client_reader(

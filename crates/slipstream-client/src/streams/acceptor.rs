@@ -178,7 +178,7 @@ impl AcceptorReservation {
         self.limiter.generation() == self.generation
     }
 
-    pub(crate) fn commit(mut self) -> bool {
+    pub(crate) fn commit(&mut self) -> bool {
         if !self.is_fresh() {
             return false;
         }
@@ -297,7 +297,7 @@ mod tests {
             let limiter = Arc::new(AcceptorLimiter::new(1024));
 
             for _ in 0..1024 {
-                let reservation = limiter.reserve().await;
+                let mut reservation = limiter.reserve().await;
                 assert!(reservation.commit(), "reservation commit should succeed");
             }
 
@@ -310,7 +310,7 @@ mod tests {
             // Simulate a peer MAX_STREAMS update after previous streams close.
             limiter.set_max(1025);
 
-            let reservation = timeout(Duration::from_secs(1), limiter.reserve())
+            let mut reservation = timeout(Duration::from_secs(1), limiter.reserve())
                 .await
                 .expect("reservation should unblock after limit increase");
             assert!(
