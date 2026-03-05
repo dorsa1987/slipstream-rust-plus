@@ -11,169 +11,201 @@ use tokio::time::{sleep, timeout, Duration};
 
 #[test]
 fn add_to_stream_fin_failure_removes_stream() {
-    let _guard = ResetOnDrop::new(|| test_hooks::set_add_to_stream_failures(0));
-    let (command_tx, _command_rx) = mpsc::unbounded_channel();
-    let data_notify = Arc::new(Notify::new());
-    let acceptor = acceptor::ClientAcceptor::new();
-    let mut state = ClientState::new(command_tx, data_notify, false, acceptor);
-    let stream_id = 4;
-    let (write_tx, _write_rx) = mpsc::unbounded_channel();
-    let (read_abort_tx, _read_abort_rx) = oneshot::channel();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .expect("build runtime");
+    rt.block_on(async {
+        let _guard = ResetOnDrop::new(|| test_hooks::set_add_to_stream_failures(0));
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let data_notify = Arc::new(Notify::new());
+        let acceptor = acceptor::ClientAcceptor::new();
+        let mut state = ClientState::new(command_tx, data_notify, false, acceptor.clone());
+        let stream_id = 4;
+        let (write_tx, _write_rx) = mpsc::unbounded_channel();
+        let (read_abort_tx, _read_abort_rx) = oneshot::channel();
 
-    state.streams.insert(
-        stream_id,
-        ClientStream {
-            write_tx,
-            read_abort_tx: Some(read_abort_tx),
-            data_rx: None,
-            tx_bytes: 0,
-            recv_state: StreamRecvState::Open,
-            send_state: StreamSendState::Open,
-            flow: FlowControlState::default(),
-        },
-    );
+        state.streams.insert(
+            stream_id,
+            ClientStream {
+                write_tx,
+                read_abort_tx: Some(read_abort_tx),
+                data_rx: None,
+                tx_bytes: 0,
+                recv_state: StreamRecvState::Open,
+                send_state: StreamSendState::Open,
+                flow: FlowControlState::default(),
+                _reservation: acceptor.reserve_for_test().await,
+            },
+        );
 
-    test_hooks::set_add_to_stream_failures(1);
+        test_hooks::set_add_to_stream_failures(1);
 
-    handle_command(
-        std::ptr::null_mut(),
-        &mut state as *mut _,
-        Command::StreamClosed { stream_id },
-    );
+        handle_command(
+            std::ptr::null_mut(),
+            &mut state as *mut _,
+            Command::StreamClosed { stream_id },
+        );
 
-    assert!(
-        !state.streams.contains_key(&stream_id),
-        "stream state should be removed when add_to_stream(fin) fails"
-    );
+        assert!(
+            !state.streams.contains_key(&stream_id),
+            "stream state should be removed when add_to_stream(fin) fails"
+        );
+    });
 }
 
 #[test]
 fn remote_fin_keeps_local_read_open() {
-    let (command_tx, _command_rx) = mpsc::unbounded_channel();
-    let data_notify = Arc::new(Notify::new());
-    let acceptor = acceptor::ClientAcceptor::new();
-    let mut state = ClientState::new(command_tx, data_notify, false, acceptor);
-    let stream_id = 4;
-    let (write_tx, mut write_rx) = mpsc::unbounded_channel();
-    let (read_abort_tx, _read_abort_rx) = oneshot::channel();
-    let (_data_tx, data_rx) = mpsc::channel(1);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .expect("build runtime");
+    rt.block_on(async {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let data_notify = Arc::new(Notify::new());
+        let acceptor = acceptor::ClientAcceptor::new();
+        let mut state = ClientState::new(command_tx, data_notify, false, acceptor.clone());
+        let stream_id = 4;
+        let (write_tx, mut write_rx) = mpsc::unbounded_channel();
+        let (read_abort_tx, _read_abort_rx) = oneshot::channel();
+        let (_data_tx, data_rx) = mpsc::channel(1);
 
-    state.streams.insert(
-        stream_id,
-        ClientStream {
-            write_tx,
-            read_abort_tx: Some(read_abort_tx),
-            data_rx: Some(data_rx),
-            tx_bytes: 0,
-            recv_state: StreamRecvState::Open,
-            send_state: StreamSendState::Open,
-            flow: FlowControlState::default(),
-        },
-    );
+        state.streams.insert(
+            stream_id,
+            ClientStream {
+                write_tx,
+                read_abort_tx: Some(read_abort_tx),
+                data_rx: Some(data_rx),
+                tx_bytes: 0,
+                recv_state: StreamRecvState::Open,
+                send_state: StreamSendState::Open,
+                flow: FlowControlState::default(),
+                _reservation: acceptor.reserve_for_test().await,
+            },
+        );
 
-    handle_stream_data(std::ptr::null_mut(), &mut state, stream_id, true, &[]);
+        handle_stream_data(std::ptr::null_mut(), &mut state, stream_id, true, &[]);
 
-    let stream = state
-        .streams
-        .get(&stream_id)
-        .expect("stream should remain after remote fin");
-    assert_eq!(stream.recv_state, StreamRecvState::FinReceived);
-    assert_eq!(stream.send_state, StreamSendState::Open);
-    assert!(
-        stream.data_rx.is_some(),
-        "local TCP read side should stay open after remote fin"
-    );
-    assert!(
-        matches!(write_rx.try_recv(), Ok(super::io_tasks::StreamWrite::Fin)),
-        "expected a TCP fin to be enqueued"
-    );
+        let stream = state
+            .streams
+            .get(&stream_id)
+            .expect("stream should remain after remote fin");
+        assert_eq!(stream.recv_state, StreamRecvState::FinReceived);
+        assert_eq!(stream.send_state, StreamSendState::Open);
+        assert!(
+            stream.data_rx.is_some(),
+            "local TCP read side should stay open after remote fin"
+        );
+        assert!(
+            matches!(write_rx.try_recv(), Ok(super::io_tasks::StreamWrite::Fin)),
+            "expected a TCP fin to be enqueued"
+        );
+    });
 }
 
 #[test]
 fn stream_removal_requires_both_halves_closed() {
-    let (command_tx, _command_rx) = mpsc::unbounded_channel();
-    let data_notify = Arc::new(Notify::new());
-    let acceptor = acceptor::ClientAcceptor::new();
-    let mut state = ClientState::new(command_tx, data_notify, false, acceptor);
-    let stream_id = 4;
-    let (write_tx, _write_rx) = mpsc::unbounded_channel();
-    let (read_abort_tx, _read_abort_rx) = oneshot::channel();
-    let (_data_tx, data_rx) = mpsc::channel(1);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .expect("build runtime");
+    rt.block_on(async {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let data_notify = Arc::new(Notify::new());
+        let acceptor = acceptor::ClientAcceptor::new();
+        let mut state = ClientState::new(command_tx, data_notify, false, acceptor.clone());
+        let stream_id = 4;
+        let (write_tx, _write_rx) = mpsc::unbounded_channel();
+        let (read_abort_tx, _read_abort_rx) = oneshot::channel();
+        let (_data_tx, data_rx) = mpsc::channel(1);
 
-    state.streams.insert(
-        stream_id,
-        ClientStream {
-            write_tx,
-            read_abort_tx: Some(read_abort_tx),
-            data_rx: Some(data_rx),
-            tx_bytes: 0,
-            recv_state: StreamRecvState::Open,
-            send_state: StreamSendState::Open,
-            flow: FlowControlState::default(),
-        },
-    );
-
-    handle_stream_data(std::ptr::null_mut(), &mut state, stream_id, true, &[]);
-    assert!(
-        state.streams.contains_key(&stream_id),
-        "stream should remain when only recv side is closed"
-    );
-
-    if let Some(stream) = state.streams.get_mut(&stream_id) {
-        stream.send_state = StreamSendState::FinQueued;
-    }
-    handle_command(
-        std::ptr::null_mut(),
-        &mut state as *mut _,
-        Command::StreamWriteDrained {
+        state.streams.insert(
             stream_id,
-            bytes: 0,
-            generation: 0,
-        },
-    );
-    assert!(
-        !state.streams.contains_key(&stream_id),
-        "stream should be removed once both halves are closed"
-    );
+            ClientStream {
+                write_tx,
+                read_abort_tx: Some(read_abort_tx),
+                data_rx: Some(data_rx),
+                tx_bytes: 0,
+                recv_state: StreamRecvState::Open,
+                send_state: StreamSendState::Open,
+                flow: FlowControlState::default(),
+                _reservation: acceptor.reserve_for_test().await,
+            },
+        );
+
+        handle_stream_data(std::ptr::null_mut(), &mut state, stream_id, true, &[]);
+        assert!(
+            state.streams.contains_key(&stream_id),
+            "stream should remain when only recv side is closed"
+        );
+
+        if let Some(stream) = state.streams.get_mut(&stream_id) {
+            stream.send_state = StreamSendState::FinQueued;
+        }
+        handle_command(
+            std::ptr::null_mut(),
+            &mut state as *mut _,
+            Command::StreamWriteDrained {
+                stream_id,
+                bytes: 0,
+                generation: 0,
+            },
+        );
+        assert!(
+            !state.streams.contains_key(&stream_id),
+            "stream should be removed once both halves are closed"
+        );
+    });
 }
 
 #[test]
 fn local_fin_does_not_remove_until_recv_fin() {
-    let (command_tx, _command_rx) = mpsc::unbounded_channel();
-    let data_notify = Arc::new(Notify::new());
-    let acceptor = acceptor::ClientAcceptor::new();
-    let mut state = ClientState::new(command_tx, data_notify, false, acceptor);
-    let stream_id = 4;
-    let (write_tx, _write_rx) = mpsc::unbounded_channel();
-    let (read_abort_tx, _read_abort_rx) = oneshot::channel();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .expect("build runtime");
+    rt.block_on(async {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let data_notify = Arc::new(Notify::new());
+        let acceptor = acceptor::ClientAcceptor::new();
+        let mut state = ClientState::new(command_tx, data_notify, false, acceptor.clone());
+        let stream_id = 4;
+        let (write_tx, _write_rx) = mpsc::unbounded_channel();
+        let (read_abort_tx, _read_abort_rx) = oneshot::channel();
 
-    state.streams.insert(
-        stream_id,
-        ClientStream {
-            write_tx,
-            read_abort_tx: Some(read_abort_tx),
-            data_rx: None,
-            tx_bytes: 0,
-            recv_state: StreamRecvState::Open,
-            send_state: StreamSendState::FinQueued,
-            flow: FlowControlState::default(),
-        },
-    );
-
-    handle_command(
-        std::ptr::null_mut(),
-        &mut state as *mut _,
-        Command::StreamWriteDrained {
+        state.streams.insert(
             stream_id,
-            bytes: 0,
-            generation: 0,
-        },
-    );
+            ClientStream {
+                write_tx,
+                read_abort_tx: Some(read_abort_tx),
+                data_rx: None,
+                tx_bytes: 0,
+                recv_state: StreamRecvState::Open,
+                send_state: StreamSendState::FinQueued,
+                flow: FlowControlState::default(),
+                _reservation: acceptor.reserve_for_test().await,
+            },
+        );
 
-    assert!(
-        state.streams.contains_key(&stream_id),
-        "stream should remain when only send side is closed"
-    );
+        handle_command(
+            std::ptr::null_mut(),
+            &mut state as *mut _,
+            Command::StreamWriteDrained {
+                stream_id,
+                bytes: 0,
+                generation: 0,
+            },
+        );
+
+        assert!(
+            state.streams.contains_key(&stream_id),
+            "stream should remain when only send side is closed"
+        );
+    });
 }
 
 #[test]
@@ -223,41 +255,49 @@ fn mark_active_stream_failure_removes_stream() {
 
 #[test]
 fn stale_task_command_is_ignored_after_reconnect() {
-    let (command_tx, _command_rx) = mpsc::unbounded_channel();
-    let data_notify = Arc::new(Notify::new());
-    let acceptor = acceptor::ClientAcceptor::new();
-    let mut state = ClientState::new(command_tx, data_notify, false, acceptor);
-    let stream_id = 4;
-    let (write_tx, _write_rx) = mpsc::unbounded_channel();
-    let (read_abort_tx, _read_abort_rx) = oneshot::channel();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .expect("build runtime");
+    rt.block_on(async {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let data_notify = Arc::new(Notify::new());
+        let acceptor = acceptor::ClientAcceptor::new();
+        let mut state = ClientState::new(command_tx, data_notify, false, acceptor.clone());
+        let stream_id = 4;
+        let (write_tx, _write_rx) = mpsc::unbounded_channel();
+        let (read_abort_tx, _read_abort_rx) = oneshot::channel();
 
-    state.streams.insert(
-        stream_id,
-        ClientStream {
-            write_tx,
-            read_abort_tx: Some(read_abort_tx),
-            data_rx: None,
-            tx_bytes: 0,
-            recv_state: StreamRecvState::Open,
-            send_state: StreamSendState::Open,
-            flow: FlowControlState::default(),
-        },
-    );
-    state.connection_generation = 1;
-
-    handle_command(
-        std::ptr::null_mut(),
-        &mut state as *mut _,
-        Command::StreamReadError {
+        state.streams.insert(
             stream_id,
-            generation: 0,
-        },
-    );
+            ClientStream {
+                write_tx,
+                read_abort_tx: Some(read_abort_tx),
+                data_rx: None,
+                tx_bytes: 0,
+                recv_state: StreamRecvState::Open,
+                send_state: StreamSendState::Open,
+                flow: FlowControlState::default(),
+                _reservation: acceptor.reserve_for_test().await,
+            },
+        );
+        state.connection_generation = 1;
 
-    assert!(
-        state.streams.contains_key(&stream_id),
-        "stale task command from old generation must not mutate current stream state"
-    );
+        handle_command(
+            std::ptr::null_mut(),
+            &mut state as *mut _,
+            Command::StreamReadError {
+                stream_id,
+                generation: 0,
+            },
+        );
+
+        assert!(
+            state.streams.contains_key(&stream_id),
+            "stale task command from old generation must not mutate current stream state"
+        );
+    });
 }
 
 #[test]
