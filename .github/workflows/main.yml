@@ -14,13 +14,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install OpenSSL
-        run: choco install openssl --yes
+      - name: Install OpenSSL via vcpkg
+        run: |
+          vcpkg install openssl:x64-windows-static
+          echo "OPENSSL_DIR=C:/vcpkg/installed/x64-windows-static" >> $env:GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
 
       - name: Build
-        env:
-          OPENSSL_DIR: C:\Program Files\OpenSSL
-          OPENSSL_NO_VENDOR: 1
         run: cargo build -p slipstream-client --release
 
       - name: Upload artifact
