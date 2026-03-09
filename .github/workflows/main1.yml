@@ -1,0 +1,32 @@
+name: Build Windows Client
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          choco install cmake ninja -y
+          vcpkg install openssl:x64-windows-static
+          echo "OPENSSL_DIR=C:/vcpkg/installed/x64-windows-static" >> $env:GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
+          echo "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+
+      - name: Build
+        run: cargo build -p slipstream-client --release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slipstream-client-windows
+          path: target/release/slipstream-client.exe
