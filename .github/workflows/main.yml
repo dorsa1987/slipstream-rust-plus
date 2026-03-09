@@ -15,11 +15,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install OpenSSL
-        run: choco install openssl
+        run: choco install openssl --yes
 
       - name: Build
         env:
-          OPENSSL_DIR: C:\Program Files\OpenSSL-Win64
+          OPENSSL_DIR: C:\Program Files\OpenSSL
+          OPENSSL_NO_VENDOR: 1
         run: cargo build -p slipstream-client --release
 
       - name: Upload artifact
